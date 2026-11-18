@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Health 360 Log</title>
+<style>
+  :root { --bg:#0e1116; --card:#171b22; --line:#262c36; --text:#eef1f5; --soft:#9aa4b2; --accent:#7c6cf2; --ok:#3ecf8e; --warn:#f2a65a; }
+  @media (prefers-color-scheme: light) { :root { --bg:#f5f6f8; --card:#fff; --line:#e3e6eb; --text:#111418; --soft:#5d6673; } }
+  * { box-sizing: border-box; }
+  body { margin:0; min-height:100vh; display:grid; place-items:center; background:var(--bg); color:var(--text);
+         font:16px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding:16px; }
+  main { width:100%; max-width:420px; background:var(--card); border:1px solid var(--line); border-radius:20px; padding:24px; }
+  h1 { font-size:20px; margin:0 0 4px; } p { margin:8px 0; color:var(--soft); }
+  label { display:block; font-size:13px; color:var(--soft); margin:14px 0 6px; }
+  input { width:100%; padding:12px 14px; border-radius:12px; border:1px solid var(--line); background:transparent; color:var(--text); font-size:16px; }
+  button { width:100%; margin-top:16px; padding:13px; border:0; border-radius:12px; font-size:16px; font-weight:600; cursor:pointer; }
+  .primary { background:var(--accent); color:#fff; } .quiet { background:transparent; color:var(--soft); border:1px solid var(--line); }
+  ul { padding-left:20px; margin:10px 0; } li { margin:4px 0; }
+  .can li::marker { color:var(--ok); } .cannot li::marker { color:var(--warn); }
+  .error { color:var(--warn); } .hidden { display:none; } .client { color:var(--text); font-weight:600; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Health 360 Log</h1>
+  <p id="status">Loading…</p>
+
+  <form id="signin" class="hidden">
+    <p>Sign in with your Health 360 email and password to connect Claude.</p>
+    <label for="email">Email</label><input id="email" type="email" autocomplete="username" required>
+    <label for="password">Password</label><input id="password" type="password" autocomplete="current-password" required>
+    <button class="primary" type="submit">Sign in</button>
+  </form>
+
+  <section id="consent" class="hidden">
+    <p><span class="client" id="client"></span> wants to connect to your Health 360 as <span class="client" id="who"></span>.</p>
+    <p>It will be able to:</p>
+    <ul class="can"><li>log, correct and delete your own food entries</li><li>log, correct and delete your own exercise entries</li><li>read your own food and exercise for a day</li></ul>
+    <p>It cannot:</p>
+    <ul class="cannot"><li>see sleep, heart, labs, cycle or anything else</li><li>see or change anyone else's data</li><li>change settings or the database</li></ul>
+    <button class="primary" id="approve" type="button">Allow</button>
+    <button class="quiet" id="deny" type="button">Don't allow</button>
+    <p style="font-size:13px">You can disconnect any time by removing the connector in Claude or changing your password.</p>
+  </section>
+</main>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.118.0/dist/umd/supabase.js" integrity="sha384-TcHRA3zBbn+Lexh5n+Oil4guNPOS3rjNDpGRAN46u/s/mB2IZ50ceC6TYDU2yvgK" crossorigin="anonymous"></script>
+<script>
+(() => {
+  const S = {"url":"https://vspskdebampxqckwiqhu.supabase.co","key":"sb_publishable_LO5KFhqNWgOIa15LyvoDJw_niOQ4OEH","hosts":["claude.ai","claude.com"]};
+  const $ = (id) => document.getElementById(id);
+  const say = (t, bad) => { $("status").textContent = t; $("status").className = bad ? "error" : ""; };
+  const authId = new URLSearchParams(location.search).get("authorization_id");
+  if (!authId || !/^[A-Za-z0-9_\-]{8,128}$/.test(authId)) { say("This page opens from Claude when you add the Health 360 Log connector.", true); return; }
+  const sb = supabase.createClient(S.url, S.key, { auth: { persistSession: true, storageKey: "h360-log-consent" } });
+
+  const isAllowedRedirect = function isAllowedRedirect(u, hosts) {
+  try {
+    const url = new URL(u);
+    if (url.protocol !== "https:" || url.username || url.password) return false;
+    const h = url.hostname.toLowerCase();
+    return hosts.some((a)=>h === a || h.endsWith("." + a));
+  } catch  {
+    return false;
+  }
+};
+  const allowed = (u) => isAllowedRedirect(String(u || ""), S.hosts);
+  const go = (u) => { if (allowed(u)) { location.replace(u); } else { say("This connection asked to return to an address that is not Claude, so it was stopped.", true); } };
+
+  async function show() {
+    const { data: { session } } = await sb.auth.getSession();
+    if (!session) { $("signin").classList.remove("hidden"); $("consent").classList.add("hidden"); say(""); return; }
+    const { data, error } = await sb.auth.oauth.getAuthorizationDetails(authId);
+    if (error) { say("This sign-in link has expired. Start again from Claude.", true); return; }
+    if (data && !("authorization_id" in data) && data.redirect_url) { go(data.redirect_url); return; }  // already allowed before
+    const target = data.redirect_uri || (data.client && data.client.redirect_uri) || "";
+    if (target && !allowed(target)) { await sb.auth.oauth.denyAuthorization(authId); say("Only Claude can connect to Health 360 Log.", true); return; }
+    $("client").textContent = (data.client && data.client.client_name) || "Claude";
+    $("who").textContent = (data.user && data.user.email) || session.user.email || "you";
+    $("signin").classList.add("hidden"); $("consent").classList.remove("hidden"); say("");
+  }
+
+  $("signin").addEventListener("submit", async (e) => {
+    e.preventDefault(); say("Signing in…");
+    const { error } = await sb.auth.signInWithPassword({ email: $("email").value.trim(), password: $("password").value });
+    $("password").value = "";
+    if (error) { say("That email and password did not match.", true); return; }
+    show();
+  });
+  $("approve").addEventListener("click", async () => {
+    say("Connecting…");
+    const { data, error } = await sb.auth.oauth.approveAuthorization(authId);
+    if (error) { say("Could not connect: " + error.message, true); return; }
+    go(data.redirect_url || data.redirect_to);
+  });
+  $("deny").addEventListener("click", async () => {
+    const { data } = await sb.auth.oauth.denyAuthorization(authId);
+    if (data && (data.redirect_url || data.redirect_to)) go(data.redirect_url || data.redirect_to); else say("Not connected.");
+  });
+  show().catch(() => say("Something went wrong. Start again from Claude.", true));
+})();
+</script>
+</body>
+</html>
